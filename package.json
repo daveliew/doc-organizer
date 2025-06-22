@@ -1,0 +1,52 @@
+{
+  "name": "@your-org/doc-organizer",
+  "version": "1.0.0",
+  "description": "Universal documentation organizer with project-type awareness and configurable patterns",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "doc-organize": "./bin/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "prepublishOnly": "npm run build",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "documentation",
+    "organization",
+    "markdown",
+    "project-management",
+    "automation",
+    "cli"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "files": [
+    "dist/",
+    "bin/",
+    "configs/",
+    "README.md"
+  ],
+  "dependencies": {
+    "fs-extra": "^11.0.0",
+    "glob": "^10.0.0",
+    "yargs": "^17.0.0",
+    "chalk": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0",
+    "@types/fs-extra": "^11.0.0",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/doc-organizer.git"
+  }
+} 
