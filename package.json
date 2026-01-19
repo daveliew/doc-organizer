@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc",
     "test": "jest",
-    "prepublishOnly": "npm run build",
+    "prepare": "npm run build",
     "dev": "tsc --watch",
     "mcp": "node dist/mcp-server.js"
   },
