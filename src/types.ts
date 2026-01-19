@@ -40,8 +40,8 @@ export interface DocOrganizerConfig {
     content: number;
     aiConfidence: number; // Minimum AI confidence to trust
   };
+  ai: AIConfig;
   excludePatterns: string[];
-  ai?: AIConfig;
 }
 
 // AI-specific configuration
