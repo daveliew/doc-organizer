@@ -4,116 +4,128 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**doc-organizer** is a universal documentation organization tool with project-type awareness. Currently in JavaScript with plans to convert to TypeScript and publish as an NPM package.
+**doc-organizer** is an AI-powered documentation organization tool with project-type awareness. It uses regex patterns for fast classification with Claude API fallback for ambiguous files. Also available as an MCP server for Claude Code integration.
 
 ## Development Commands
 
-### Setup
 ```bash
-# Install dependencies
-npm install
-
-# Build TypeScript (after conversion)
-npm run build
-
-# Run tests
-npm test
-
-# Development mode
-npm run dev
+npm install           # Install dependencies
+npm run build         # Build TypeScript to dist/
+npm run dev           # Watch mode for TypeScript
+npm test              # Run tests
 ```
 
 ### Running the Tool
 ```bash
-# Current (direct execution)
-node doc-organizer.js <command> [options]
+# Standard mode (regex-only)
+node doc-organizer.js
 
-# Future (after NPM setup)
-npx doc-organize scan
-npx doc-organize organize --apply
+# Apply high-confidence moves
+node doc-organizer.js --apply
+
+# AI-enhanced mode (uses Claude for low-confidence files)
+node doc-organizer.js --ai
+
+# Apply with AI enhancement
+node doc-organizer.js --ai --apply
+
+# Start MCP server
+node bin/cli.js mcp
+
+# After npm link / publish
+doc-organize --help
 ```
 
-## Architecture & Code Structure
+## Architecture
 
-### Current Implementation
-- **doc-organizer.js**: Main implementation (~545 lines)
-  - Class: `DocumentationOrganizer` - Core logic for scanning and organizing
-  - Configuration loading from multiple sources (.json, .js, package.json)
-  - Project type detection and pattern matching
-  - Confidence-based file organization suggestions
-
-- **doc-organizer-configs.js**: Example configurations for different project types
-  - web-app, library, API, data-science, mobile configurations
-  - Pattern definitions and destination mappings
-
-### Planned Structure (Phase 1)
 ```
-src/
-├── cli/              # CLI entry point and commands
-├── core/             # Core organizer logic
-├── types/            # TypeScript types
-├── configs/          # Built-in configurations
-├── utils/            # Helper functions
-└── __tests__/        # Test files
+doc-organizer-project/
+├── doc-organizer.js        # Main JS implementation (hybrid sync/async)
+├── doc-organizer-configs.js # Example project type configs
+├── bin/cli.js              # CLI entry point
+├── src/
+│   ├── index.ts            # Package exports
+│   ├── types.ts            # TypeScript interfaces
+│   ├── ai-classifier.ts    # Claude API integration
+│   └── mcp-server.ts       # MCP server (3 tools)
+├── dist/                   # Compiled TypeScript
+└── tsconfig.json           # TypeScript config
 ```
 
-## Key Concepts
+### Key Components
 
-### Project Type Detection
-The tool detects project type based on file presence:
-- **web-app**: public/index.html or src/App.js
-- **library**: Single entry point (index.js/main.js)
-- **API**: routes/, api/, or server.js
-- **data-science**: notebooks/, data/, requirements.txt
-- **mobile**: android/, ios/, or React Native files
+**DocumentationOrganizer (doc-organizer.js)**
+- Pattern-based file classification (90% confidence for filename match)
+- Async AI enhancement for low-confidence files (<80%)
+- Configuration merging (user config + defaults)
+- Protected files handling
 
-### Configuration Priority
-1. `.doc-organizer.json` (project-specific)
-2. `.doc-organizer.js` (dynamic config)
-3. `doc-organizer` key in package.json
-4. Built-in defaults by project type
+**AIClassifier (src/ai-classifier.ts)**
+- Uses `@anthropic-ai/sdk` with Claude Sonnet
+- Structured JSON output via tool use
+- Lazy initialization (only loads if API key available)
+- Merges AI results with regex analysis
 
-### Protected Files
-Never move: README.md, LICENSE, CHANGELOG.md, package.json, lock files
+**MCP Server (src/mcp-server.ts)**
+- `analyze_docs`: Scan and return organization suggestions
+- `apply_organization`: Execute file moves
+- `health_check`: Return documentation health metrics
 
-## Development Roadmap
+## Configuration
 
-Currently implementing **Phase 1: Core NPM Package**
-- Convert to TypeScript
-- Set up proper build system
-- Implement test suite
-- Publish to NPM
+`.doc-organizer.json` example:
+```json
+{
+  "projectType": "web-app",
+  "structure": {
+    "aiDocs": "docs/ai",
+    "specs": "specs"
+  },
+  "ai": {
+    "enabled": true,
+    "model": "claude-sonnet-4-20250514"
+  },
+  "thresholds": {
+    "autoApply": 0.8,
+    "aiFallback": 0.8
+  }
+}
+```
 
-Future phases include Claude API integration, VS Code extension, and MCP server.
+### Thresholds
+- `autoApply: 0.8` - 80%+ confidence for auto-apply
+- `suggest: 0.7` - 70%+ for suggestions
+- `filename: 0.9` - Filename matches get 90%
+- `content: 0.5` - Content-only matches get 50%
+- `aiFallback: 0.8` - Use AI when below 80%
 
-## Testing Approach
+## MCP Server Setup
 
-Tests should cover:
-- Configuration loading and merging
-- Pattern matching logic
-- Project type detection
-- File organization suggestions
-- Protected file handling
+Add to `~/.claude/claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "doc-organizer": {
+      "command": "node",
+      "args": ["/path/to/doc-organizer-project/dist/mcp-server.js"]
+    }
+  }
+}
+```
 
-Run specific tests:
+## Environment Variables
+
+- `ANTHROPIC_API_KEY` - Required for AI classification (optional, graceful fallback)
+
+## Testing
+
 ```bash
-npm test -- --testNamePattern="pattern matching"
-npm test -- path/to/specific.test.ts
+npm test                                    # All tests
+npm test -- --testNamePattern="pattern"     # Specific tests
 ```
 
-## Important Implementation Notes
+## Next Steps
 
-1. **Confidence Scoring**: Files are categorized as high (>80%), medium (50-80%), or low (<50%) confidence
-2. **Variable Substitution**: Supports `{ext}`, `{name}`, `{dir}` in destination paths
-3. **Dry Run by Default**: Always preview changes before applying with --apply flag
-4. **Project Context**: Tool adapts patterns based on detected project type
-
-## Current Development Focus
-
-1. Initialize git repository
-2. Convert doc-organizer.js to TypeScript
-3. Set up proper source directory structure
-4. Configure TypeScript and ESLint
-5. Implement initial test suite
-6. Set up CLI binary in package.json
-7. Prepare for NPM publication
+1. **Phase 2**: Add more comprehensive tests
+2. **Phase 3**: Publish to NPM as `@daveliew/doc-organizer`
+3. **Phase 4**: Full TypeScript conversion of doc-organizer.js

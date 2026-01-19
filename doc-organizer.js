@@ -3,6 +3,25 @@
 const fs = require('fs');
 const path = require('path');
 
+// AI classifier - lazy loaded to avoid breaking non-AI usage
+let aiClassifier = null;
+
+/**
+ * Load AI classifier if available (built TypeScript)
+ */
+function getAIClassifier() {
+  if (aiClassifier === undefined) {
+    try {
+      const { AIClassifier } = require('./dist/ai-classifier.js');
+      aiClassifier = new AIClassifier();
+    } catch {
+      // AI classifier not available (TypeScript not built or dependencies missing)
+      aiClassifier = null;
+    }
+  }
+  return aiClassifier;
+}
+
 // Generalized Organization Rules - Configurable for different project types
 class DocumentationOrganizer {
   constructor(config = {}) {
@@ -10,6 +29,7 @@ class DocumentationOrganizer {
     this.suggestions = [];
     this.moves = [];
     this.errors = [];
+    this.aiClassifier = config.useAI ? getAIClassifier() : null;
   }
 
   // Default configuration that works for most projects
@@ -67,7 +87,15 @@ class DocumentationOrganizer {
         autoApply: 0.8,    // 80%+ confidence for auto-apply
         suggest: 0.7,      // 70%+ confidence for suggestions
         filename: 0.9,     // Filename matches get high confidence
-        content: 0.5       // Content matches get lower confidence
+        content: 0.5,      // Content matches get lower confidence
+        aiFallback: 0.8    // Use AI when regex confidence < 80%
+      },
+
+      // AI configuration
+      ai: {
+        enabled: false,    // Disabled by default (requires ANTHROPIC_API_KEY)
+        model: 'claude-sonnet-4-20250514',
+        maxTokens: 500
       },
       
       // Exclusion patterns for directory traversal
@@ -85,6 +113,7 @@ class DocumentationOrganizer {
       destinations: { ...defaults.destinations, ...(userConfig.destinations || {}) },
       structure: { ...defaults.structure, ...(userConfig.structure || {}) },
       thresholds: { ...defaults.thresholds, ...(userConfig.thresholds || {}) },
+      ai: { ...defaults.ai, ...(userConfig.ai || {}) },
       protectedFiles: [...defaults.protectedFiles, ...(userConfig.protectedFiles || [])]
     };
     
@@ -226,6 +255,108 @@ class DocumentationOrganizer {
     }
   }
 
+  // Async version of analyzeFileContent with AI enhancement
+  async analyzeFileContentWithAI(filePath) {
+    // Get the base regex analysis first
+    const analysis = this.analyzeFileContent(filePath);
+    if (!analysis) return null;
+
+    // Check if we should use AI (low confidence and AI enabled)
+    const shouldUseAI = this.config.ai.enabled &&
+                        this.aiClassifier &&
+                        this.aiClassifier.isAvailable() &&
+                        analysis.confidence < this.config.thresholds.aiFallback;
+
+    if (!shouldUseAI) {
+      return analysis;
+    }
+
+    try {
+      // Read file content for AI analysis
+      const content = fs.readFileSync(filePath, 'utf8');
+      const contentPreview = content.substring(0, 2000);
+
+      const aiResult = await this.aiClassifier.classify({
+        filePath,
+        fileName: analysis.fileName,
+        contentPreview,
+        availableCategories: Object.keys(this.config.patterns),
+        existingAnalysis: {
+          category: analysis.suggestedCategory,
+          confidence: analysis.confidence,
+          reasons: analysis.reasons
+        }
+      });
+
+      if (aiResult) {
+        // Merge AI result with existing analysis
+        const merged = this.aiClassifier.mergeAnalysis(
+          {
+            category: analysis.suggestedCategory,
+            confidence: analysis.confidence,
+            reasons: analysis.reasons
+          },
+          aiResult
+        );
+
+        analysis.suggestedCategory = merged.category;
+        analysis.confidence = merged.confidence;
+        analysis.reasons = merged.reasons;
+        analysis.aiEnhanced = true;
+
+        // Update suggested path based on new category
+        if (merged.category && this.config.destinations[merged.category]) {
+          const destination = this.resolveDestination(this.config.destinations[merged.category]);
+          analysis.suggestedPath = destination + analysis.fileName + '.md';
+        }
+      }
+    } catch (error) {
+      // AI failed, but we still have the regex result
+      analysis.reasons.push(`AI enhancement failed: ${error.message}`);
+    }
+
+    return analysis;
+  }
+
+  // Async version of generateSuggestions with AI support
+  async generateSuggestionsWithAI() {
+    console.log(`🔍 Analyzing markdown files for ${this.config.projectType} project organization...`);
+    if (this.config.ai.enabled && this.aiClassifier?.isAvailable()) {
+      console.log('🤖 AI enhancement enabled (Claude Sonnet)\n');
+    } else {
+      console.log('📋 Using pattern-based classification\n');
+    }
+
+    this.adjustForProjectType();
+
+    const files = this.getAllMdFiles();
+    const misplacedFiles = [];
+
+    for (const file of files) {
+      const analysis = this.config.ai.enabled
+        ? await this.analyzeFileContentWithAI(file)
+        : this.analyzeFileContent(file);
+
+      if (!analysis) continue; // Skip protected files and analysis failures
+
+      // Use configured threshold for suggestions
+      if (!this.isCorrectlyPlaced(analysis) && analysis.confidence >= this.config.thresholds.suggest) {
+        misplacedFiles.push(analysis);
+
+        this.suggestions.push({
+          current: analysis.currentPath,
+          suggested: analysis.suggestedPath,
+          category: analysis.suggestedCategory,
+          confidence: analysis.confidence,
+          reasons: analysis.reasons,
+          aiEnhanced: analysis.aiEnhanced || false
+        });
+      }
+    }
+
+    return { files: files.length, misplaced: misplacedFiles.length };
+  }
+
   // Check if file is in the correct location according to rules
   isCorrectlyPlaced(analysis) {
     if (!analysis || !analysis.suggestedCategory) return true; // Unknown category, assume correct
@@ -353,7 +484,8 @@ class DocumentationOrganizer {
     if (this.suggestions.length > 0) {
       console.log('📁 SUGGESTED RELOCATIONS:');
       this.suggestions.forEach((suggestion, index) => {
-        console.log(`\n${index + 1}. ${suggestion.current}`);
+        const aiIndicator = suggestion.aiEnhanced ? ' 🤖' : '';
+        console.log(`\n${index + 1}. ${suggestion.current}${aiIndicator}`);
         console.log(`   → ${suggestion.suggested}`);
         console.log(`   Category: ${suggestion.category}`);
         console.log(`   Confidence: ${(suggestion.confidence * 100).toFixed(0)}%`);
@@ -469,26 +601,35 @@ class DocumentationOrganizer {
     console.log(`\n🎉 Applied ${autoMoves.length} moves successfully!`);
   }
 
-  // Main execution method
+  // Main execution method (sync, for backwards compatibility)
   run() {
     const args = process.argv.slice(2);
     const shouldApply = args.includes('--apply');
-    
+    const useAI = args.includes('--ai');
+
+    // If AI flag is passed, use async version
+    if (useAI) {
+      this.config.ai.enabled = true;
+      this.aiClassifier = getAIClassifier();
+      this.runAsync(shouldApply);
+      return;
+    }
+
     if (shouldApply) {
       // Generate suggestions first
       this.generateSuggestions();
       this.applyMoves();
     } else {
       this.generateReport();
-      
+
       if (this.suggestions.length > 0) {
-        console.log('\n🤖 AUTOMATED ORGANIZATION MODE');
+        console.log('\n🔄 AUTOMATED ORGANIZATION MODE');
         console.log('==============================\n');
         console.log('The following moves will be applied automatically:');
         console.log(`(Only high-confidence suggestions with ≥${(this.config.thresholds.autoApply * 100).toFixed(0)}% certainty)\n`);
-        
+
         const autoMoves = this.suggestions.filter(s => s.confidence >= this.config.thresholds.autoApply);
-        
+
         if (autoMoves.length === 0) {
           console.log('No high-confidence moves found. Manual review recommended.');
           console.log('Run without --apply flag to see all suggestions.\n');
@@ -498,9 +639,80 @@ class DocumentationOrganizer {
           });
           console.log('\n⚠️  Run with --apply flag to execute these moves');
           console.log('⚠️  Make sure to commit current changes first!');
+          console.log('\n💡 Tip: Add --ai flag for AI-enhanced classification');
         }
       }
     }
+  }
+
+  // Async execution with AI support
+  async runAsync(shouldApply = false) {
+    if (shouldApply) {
+      await this.generateSuggestionsWithAI();
+      this.applyMoves();
+    } else {
+      await this.generateReportWithAI();
+
+      if (this.suggestions.length > 0) {
+        console.log('\n🤖 AUTOMATED ORGANIZATION MODE (AI-Enhanced)');
+        console.log('============================================\n');
+        console.log('The following moves will be applied automatically:');
+        console.log(`(Only high-confidence suggestions with ≥${(this.config.thresholds.autoApply * 100).toFixed(0)}% certainty)\n`);
+
+        const autoMoves = this.suggestions.filter(s => s.confidence >= this.config.thresholds.autoApply);
+
+        if (autoMoves.length === 0) {
+          console.log('No high-confidence moves found. Manual review recommended.');
+          console.log('Run without --apply flag to see all suggestions.\n');
+        } else {
+          autoMoves.forEach((move, index) => {
+            const aiIndicator = move.aiEnhanced ? ' 🤖' : '';
+            console.log(`${index + 1}. ${move.current} → ${move.suggested}${aiIndicator}`);
+          });
+          console.log('\n⚠️  Run with --apply --ai flags to execute these moves');
+          console.log('⚠️  Make sure to commit current changes first!');
+        }
+      }
+    }
+  }
+
+  // Async version of generateReport with AI
+  async generateReportWithAI() {
+    const stats = await this.generateSuggestionsWithAI();
+    const namingViolations = this.checkNamingConventions();
+
+    console.log('📋 DOCUMENTATION ORGANIZATION REPORT');
+    console.log(`Project Type: ${this.config.projectType.toUpperCase()}`);
+    console.log('===================================\n');
+
+    // Summary
+    console.log(`📊 SUMMARY:`);
+    console.log(`   Total files analyzed: ${stats.files}`);
+    console.log(`   Files needing relocation: ${stats.misplaced}`);
+    console.log(`   Protected files (correctly placed): ${this.config.protectedFiles.length}`);
+    console.log(`   Naming violations: ${namingViolations.length}`);
+    console.log(`   Errors encountered: ${this.errors.length}`);
+    if (this.config.ai.enabled) {
+      const aiEnhanced = this.suggestions.filter(s => s.aiEnhanced).length;
+      console.log(`   AI-enhanced classifications: ${aiEnhanced}`);
+    }
+    console.log();
+
+    // Show configuration being used
+    console.log('⚙️  CONFIGURATION:');
+    console.log(`   AI Docs Directory: ${this.config.structure.aiDocs}/`);
+    console.log(`   Specs Directory: ${this.config.structure.specs}/`);
+    console.log(`   Auto-apply threshold: ${(this.config.thresholds.autoApply * 100).toFixed(0)}%`);
+    console.log(`   Suggestion threshold: ${(this.config.thresholds.suggest * 100).toFixed(0)}%`);
+    console.log(`   AI Enhancement: ${this.config.ai.enabled ? 'Enabled' : 'Disabled'}`);
+    console.log();
+
+    // Rest of the report logic...
+    this.displaySuggestions();
+    this.displayProtectedFiles();
+    this.displayNamingViolations(namingViolations);
+    this.displayErrors();
+    this.generateRecommendations();
   }
 }
 
